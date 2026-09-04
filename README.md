@@ -2,66 +2,54 @@
 
 [![Validate infrastructure](https://github.com/aadi308/aws-terragrunt-reference-architecture/actions/workflows/validate.yml/badge.svg)](https://github.com/aadi308/aws-terragrunt-reference-architecture/actions/workflows/validate.yml)
 
-A sanitized, recruiter-oriented reference implementation for running a container workload on AWS with Terraform and Terragrunt. It demonstrates reusable modules, isolated environment state, private compute, encrypted logs, least-privilege IAM examples, and automated policy checks.
+I built this repository to show how I would organize a small AWS platform that has more than one environment. The example runs an ECS Fargate service behind an Application Load Balancer, with networking, security groups, logging, and monitoring managed as code.
 
-> This repository is an independent public reference implementation written from scratch. Its design is inspired by infrastructure patterns used in professional production work that reduced provisioning time by approximately 60%. That measured outcome belongs to the professional work; this demonstration has not itself produced or independently validated that metric.
+The code is intentionally small enough to review in one sitting. It is a reference architecture, not a production-ready platform or a one-click deployment.
 
-## The deployment problem
+## The problem I wanted to solve
 
-Infrastructure repositories often begin with one environment and accumulate copied configuration as staging and production are added. The copies drift, security settings diverge, and a routine networking change must be repeated in several places. Meanwhile, application teams need a repeatable way to deploy containers without placing workloads directly on the public internet.
+Terraform is easy to start with, but a repository can become repetitive once dev, staging, and production are added. Teams often end up copying the same configuration three times. Those copies eventually drift, and a simple network or security change has to be made in several places.
 
-This project addresses that problem with:
+Here, Terraform modules own the AWS resources and Terragrunt connects those modules to each environment. Shared settings live in one place, while the values that should differ—CIDR ranges, task counts, retention periods, and deletion protection—stay visible in each environment file.
 
-- reusable Terraform modules for networking, security, compute, and monitoring;
-- Terragrunt configuration inheritance for shared defaults;
-- distinct state keys and CIDR ranges for dev, staging, and production;
-- an internet-facing TLS load balancer with Fargate tasks in private subnets;
-- validation and security gates that run before changes are merged.
+## What this creates
 
-This is a reference architecture, not a turnkey production platform. Replace every `REPLACE_ME` value and review the design against your organization's requirements before deployment.
-
-## Architecture
+- A separate VPC for dev, staging, and production
+- Public and private subnets across two or three Availability Zones
+- An internet-facing Application Load Balancer with HTTPS only
+- ECS Fargate tasks in private subnets with no public IP addresses
+- Explicit route tables and one NAT gateway per Availability Zone
+- Security groups that allow application traffic only from the load balancer
+- Encrypted application logs and VPC flow logs in CloudWatch
+- CloudWatch alarms for CPU, memory, and target 5xx responses
+- A small CloudWatch service-health dashboard
 
 ```mermaid
 flowchart TB
-  Internet((Internet)) -->|HTTPS 443| ALB[Application Load Balancer]
+  User((User)) -->|HTTPS 443| ALB[Application Load Balancer]
 
-  subgraph AWS[Isolated AWS account or account boundary]
-    subgraph VPC[VPC across 2-3 Availability Zones]
-      subgraph Public[Public subnets]
-        ALB
-        NAT[NAT Gateway per AZ]
-      end
-      IGW[Internet Gateway] --- Public
-      ALB -->|HTTP 80, SG-to-SG only| ECS[ECS Fargate service]
-      subgraph Private[Private subnets]
-        ECS
-      end
-      ECS -->|TLS egress| NAT
-      ECS --> LOGS[Encrypted CloudWatch logs]
-      VPC --> FLOW[Encrypted VPC flow logs]
+  subgraph VPC[AWS VPC]
+    subgraph Public[Public subnets]
+      ALB
+      NAT[NAT gateways]
     end
-    ECS --> METRICS[CloudWatch metrics, alarms, dashboard]
+
+    subgraph Private[Private subnets]
+      ECS[ECS Fargate service]
+    end
+
+    ALB -->|HTTP 80<br/>security group to security group| ECS
+    ECS -->|Outbound HTTPS| NAT
   end
 
-  TG[Terragrunt: dev / staging / production] --> VPC
-  CI[GitHub Actions validation] --> TG
+  ECS --> Logs[Encrypted CloudWatch logs]
+  ECS --> Metrics[CloudWatch alarms and dashboard]
+  VPC --> FlowLogs[Encrypted VPC flow logs]
 ```
 
-Each environment creates its own VPC and component state. The sample uses one NAT gateway per Availability Zone for resilient private-subnet egress. NAT gateways are frequently the largest fixed cost in a small demo; see [Cost and lower-cost alternatives](#cost-and-lower-cost-alternatives).
+Only the load balancer is reachable from the internet. The containers stay in private subnets and receive traffic through a security-group reference rather than a broad CIDR rule.
 
-## Why Terragrunt
-
-Terraform modules describe reusable infrastructure. Terragrunt handles how those modules are assembled for each environment:
-
-- `live/root.hcl` generates the AWS provider and encrypted remote-state configuration once.
-- `live/_env/*.hcl` supplies component defaults, dependency wiring, and module sources once.
-- each `environment.hcl` holds only values that genuinely differ, such as CIDRs, task count, retention, and deletion protection.
-- leaf `terragrunt.hcl` files select root and component configuration without duplicating inputs.
-
-This inheritance model reduces copy/paste while keeping environment differences visible in review. `path_relative_to_include()` produces a distinct remote-state key for every component. Separate VPC CIDRs and state paths prevent accidental cross-environment coupling. For stronger production isolation, deploy each environment to a separate AWS account and state bucket.
-
-## Repository structure
+## Repository layout
 
 ```text
 .
@@ -75,13 +63,13 @@ This inheritance model reduces copy/paste while keeping environment differences 
 │   │   └── service-security-group.hcl
 │   ├── dev
 │   │   ├── environment.hcl
-│   │   └── us-east-1/{network,alb-security-group,service-security-group,ecs-service,monitoring}
+│   │   └── us-east-1/
 │   ├── staging
 │   │   ├── environment.hcl
-│   │   └── us-east-1/{network,alb-security-group,service-security-group,ecs-service,monitoring}
+│   │   └── us-east-1/
 │   ├── production
 │   │   ├── environment.hcl
-│   │   └── us-east-1/{network,alb-security-group,service-security-group,ecs-service,monitoring}
+│   │   └── us-east-1/
 │   └── root.hcl
 ├── modules
 │   ├── ecs-fargate
@@ -97,92 +85,112 @@ This inheritance model reduces copy/paste while keeping environment differences 
 └── README.md
 ```
 
-## Security defaults
+The `modules` directory contains reusable Terraform. The `live` directory describes how those modules are used in each environment.
 
-- Fargate tasks have no public IP and run only in private subnets.
-- The ALB accepts HTTPS and uses a modern TLS policy; an ACM certificate is required.
-- The task security group accepts application traffic only from the ALB security group.
-- Fargate has only TCP/443 egress for image pulls and AWS API calls.
-- VPC flow logs and application logs use customer-managed KMS keys with rotation enabled.
-- CloudWatch log retention is explicit.
-- The ECS task role starts with no permissions. Add narrowly scoped application permissions only when required.
-- The execution role can write only to the service's log group. The public demonstration image needs no private-registry permission; add narrowly scoped ECR pull permissions when moving to a private repository.
-- The container root filesystem is read-only and ECS Exec is disabled.
-- Terraform state, plans, variable files, credentials, keys, environment files, generated providers, and Terragrunt caches are ignored.
-- No credentials are stored in code. Use IAM Identity Center, short-lived role credentials, or GitHub Actions OIDC.
+## Why Terragrunt is here
 
-Remote state can contain sensitive values even when outputs are marked `sensitive`. Create the state bucket and lock table separately with versioning, encryption, public-access blocking, restricted bucket policies, and recovery controls. This repository deliberately does not bootstrap its own backend to avoid a circular dependency.
+Terragrunt handles the parts I do not want repeated in every component:
 
-## Prerequisites
+- `live/root.hcl` generates the AWS provider and remote-state configuration.
+- `live/_env` contains shared configuration and dependency wiring for each component type.
+- Each `environment.hcl` contains the values specific to that environment.
+- The small leaf `terragrunt.hcl` files choose the root and component configuration to inherit.
+
+Terragrunt also passes outputs between components. For example, the network creates subnet IDs, the ECS configuration consumes them, and the monitoring configuration consumes the ECS and load-balancer names.
+
+Each component gets its own state key from `path_relative_to_include()`. Dev, staging, and production also use different VPC CIDRs. In a real organization, I would strengthen this boundary further by placing each environment in a separate AWS account with its own state bucket.
+
+## Environment differences
+
+| Setting | Dev | Staging | Production |
+|---|---:|---:|---:|
+| Availability Zones | 2 | 2 | 3 |
+| Desired tasks | 1 | 2 | 3 |
+| Task CPU | 256 | 256 | 512 |
+| Task memory | 512 MiB | 512 MiB | 1024 MiB |
+| ALB deletion protection | Off | Off | On |
+| Log retention | 365 days | 365 days | 365 days |
+
+These values are examples. They are meant to make the environment boundaries easy to see, not to recommend a particular production capacity.
+
+## Security choices
+
+- Fargate tasks run privately and do not receive public IP addresses.
+- The load balancer accepts HTTPS using an ACM certificate supplied at runtime.
+- The service accepts port 80 only from the load balancer security group.
+- Container egress is limited to HTTPS.
+- The container root filesystem is read-only, and ECS Exec is disabled.
+- The application task role starts with no permissions.
+- The execution role can write only to the service's CloudWatch log group.
+- Application logs and VPC flow logs use customer-managed KMS keys with rotation enabled.
+- The default VPC security group is managed as deny-all.
+- Terraform state, plans, variable files, credentials, private keys, generated providers, and Terragrunt caches are ignored by Git.
+
+The backend still needs to be created separately. Treat state as sensitive data even when Terraform outputs are marked `sensitive`. A real state bucket should have encryption, versioning, public-access blocking, restricted policies, and recovery controls.
+
+No AWS credentials are stored in this repository. Use short-lived credentials from IAM Identity Center or an assumed role. For CI deployment, use GitHub OIDC instead of long-lived access keys.
+
+## Before you start
+
+Install the following tools:
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) `>= 1.5.7, < 2.0`
-- [Terragrunt](https://terragrunt.gruntwork.io/docs/getting-started/install/) `0.99.x` or a compatible release
-- AWS CLI v2 and authorized, short-lived credentials
-- TFLint with the AWS ruleset
+- [Terragrunt](https://terragrunt.gruntwork.io/docs/getting-started/install/) `0.99.x` or a compatible version
+- AWS CLI v2
+- TFLint
 - Checkov
 - Gitleaks
-- an existing encrypted S3 state bucket and DynamoDB lock table
-- an ACM certificate in the selected AWS region
 
-No AWS account number, backend name, certificate, credential, or internal endpoint is included.
+To deploy, you will also need an encrypted S3 state bucket, a DynamoDB lock table, and an ACM certificate in the target region. The repository uses obvious placeholders for these values.
 
-## Quick start
-
-Clone this public reference implementation and run its checks without contacting AWS or creating infrastructure:
+## Clone and validate
 
 ```bash
 git clone https://github.com/aadi308/aws-terragrunt-reference-architecture.git
 cd aws-terragrunt-reference-architecture
+```
+
+Run all local checks:
+
+```bash
 make check
 ```
 
-`make check` formats, validates, lints, and scans the repository. It does not run `plan`, `apply`, or `destroy`.
+Or run them separately:
 
-## Setup and validation
+```bash
+make fmt-check
+make validate
+make lint
+make security
+make secrets
+```
 
-1. Export placeholder-derived configuration in your shell. Do not commit a populated `.env` file.
+These checks do not create AWS resources. Terraform initialization downloads providers, so it still needs internet access.
 
-   ```bash
-   export AWS_PROFILE="replace-me"
-   export TF_STATE_BUCKET="replace-me-terraform-state-bucket"
-   export TF_LOCK_TABLE="replace-me-terraform-lock-table"
-   export TF_VAR_certificate_arn="arn:aws:acm:us-east-1:000000000000:certificate/replace-me"
-   ```
+## Configure an environment
 
-2. Authenticate with short-lived AWS credentials and confirm the intended identity.
+Export the backend and certificate placeholders in your shell. Do not put real values in a committed `.env` file.
 
-   ```bash
-   aws sts get-caller-identity
-   ```
+```bash
+export AWS_PROFILE="replace-me"
+export TF_STATE_BUCKET="replace-me-terraform-state-bucket"
+export TF_LOCK_TABLE="replace-me-terraform-lock-table"
+export TF_VAR_certificate_arn="arn:aws:acm:us-east-1:000000000000:certificate/replace-me"
+```
 
-3. Review `live/dev/environment.hcl`, especially CIDRs, Availability Zones, NAT gateways, task sizing, tags, and deletion protection.
+Before planning, check the environment file you intend to use. For dev, that is `live/dev/environment.hcl`.
 
-4. Validate without deploying.
+## Plan and apply
 
-   ```bash
-   make fmt-check
-   make validate
-   make lint
-   make security
-   make secrets
-   ```
+Plan the complete dev dependency graph:
 
-5. Preview one environment from its regional directory.
+```bash
+cd live/dev/us-east-1
+terragrunt run --all plan
+```
 
-   ```bash
-   cd live/dev/us-east-1
-   terragrunt run --all plan
-   ```
-
-6. Apply only after reviewing the plan and estimated cost.
-
-   ```bash
-   terragrunt run --all apply
-   ```
-
-### Common Terragrunt commands
-
-Run a single component from its directory:
+You can also work with one component from its own directory:
 
 ```bash
 cd live/dev/us-east-1/network
@@ -190,96 +198,72 @@ terragrunt init
 terragrunt plan
 ```
 
-Run the complete environment dependency graph from its regional directory:
+Review the complete plan and the cost implications before applying anything:
 
 ```bash
 cd live/dev/us-east-1
-terragrunt run --all plan
-```
-
-Apply or destroy only after reviewing the plan, placeholders, credentials, and estimated cost:
-
-```bash
 terragrunt run --all apply
-terragrunt run --all destroy
 ```
 
-## CI validation
+## CI checks
 
-The pull-request workflow is read-only and requests only `contents: read`. It runs:
+The GitHub Actions workflow runs on pushes to `main` and on pull requests. It checks:
 
-1. `terraform fmt -check -recursive` to catch Terraform formatting drift;
-2. `terragrunt hcl fmt --check` to catch HCL formatting drift;
-3. `terraform init -backend=false` and `terraform validate` for every reusable module;
-4. TFLint with recommended Terraform rules and the AWS ruleset;
-5. Checkov static security and compliance checks;
-6. Gitleaks across Git history and the working tree.
+1. Terraform formatting
+2. Terragrunt formatting
+3. Terraform validation for every module
+4. TFLint and its AWS rules
+5. Gitleaks secret scanning
+6. Checkov security policies
 
-Module validation avoids remote-state access and AWS authentication. A delivery pipeline should add plan jobs using GitHub OIDC, environment protection rules, manual production approval, and saved plan artifacts with restricted retention.
+The workflow has read-only repository permissions. It validates the code but does not authenticate to AWS, create a plan, or deploy resources.
 
-## Design decisions
+## Cost warning
 
-| Decision | Rationale | Trade-off |
-|---|---|---|
-| Small, focused modules | Makes network, security, service, and monitoring responsibilities easy to inspect | More dependency wiring than a monolithic module |
-| Component-level state | Limits blast radius and permits independent changes | Cross-component outputs require Terragrunt dependencies |
-| Private Fargate tasks | Removes direct inbound exposure and host management | Requires NAT or VPC endpoints for image and API access |
-| HTTPS-only ALB | Demonstrates secure ingress and certificate management | Requires a domain and ACM certificate |
-| One NAT per AZ | Avoids cross-AZ dependency and improves resilience | Material hourly and data-processing cost |
-| Empty application task role | Makes least privilege the starting point | Real applications must add explicit permissions |
-| KMS-encrypted logs | Demonstrates encryption and key rotation | Adds KMS cost and policy-management responsibility |
+This architecture is not free to run. NAT gateways, the load balancer, Fargate tasks, CloudWatch logs, and KMS keys all create charges. NAT gateways are likely to be the largest fixed expense for a small demo, and the production example creates three of them.
 
-## Cost and lower-cost alternatives
+Check the current AWS Pricing Calculator before deploying. For a cheaper networking-only review, set `enable_nat_gateway = false` and do not deploy ECS. Another option is to add VPC endpoints for ECR, CloudWatch Logs, and S3, but endpoints also have hourly costs. Compare both designs for your region and expected traffic.
 
-**Warning:** this design creates billable AWS resources. NAT gateways, an Application Load Balancer, Fargate tasks, CloudWatch ingestion and storage, and KMS keys incur charges even at low traffic. Production is configured for three NAT gateways and three tasks. Consult the current AWS Pricing Calculator for the deployment region before applying; prices change and this repository does not provide a quote.
+## Clean up
 
-For a temporary lab, choose a deliberate alternative:
+Production enables ALB deletion protection. Set it to `false`, apply that change, and review the result before destroying production.
 
-- Set `enable_nat_gateway = false` and do not deploy ECS. This leaves isolated private subnets for network-only review at the lowest infrastructure cost.
-- Replace public image pulls with private ECR and add interface endpoints for ECR API, ECR DKR, and CloudWatch Logs plus an S3 gateway endpoint. Compare endpoint hourly cost against NAT usage.
-- Extend the network module with a single-NAT mode for non-production. It is cheaper but introduces a single-AZ dependency and possible cross-AZ data charges.
-- Run static validation only. Local emulators do not prove the behavior of every managed AWS service.
-
-The committed environments retain the resilient per-AZ pattern so the routing design is unambiguous. Change it consciously before applying a portfolio environment.
-
-## Cleanup and destroy
-
-Destroy in reverse dependency order. Production ALB deletion protection must first be set to `false`, applied, and reviewed.
+For dev:
 
 ```bash
 cd live/dev/us-east-1
 terragrunt run --all destroy
 ```
 
-Afterward, verify that no load balancers, NAT gateways, elastic IPs, ECS tasks, CloudWatch log groups, dashboards, alarms, or customer-managed KMS keys remain. KMS keys enter a 30-day pending-deletion period. Remote state is intentionally retained; delete it only under your organization's retention and recovery policy.
+After destroy completes, check for leftover NAT gateways, Elastic IP addresses, load balancers, ECS tasks, log groups, alarms, dashboards, and KMS keys. KMS keys remain in a 30-day pending-deletion period. Remote state is deliberately retained and should be handled according to your recovery policy.
 
-## What recruiters should examine
+## Trade-offs and next steps
 
-- how root, component, and environment inheritance keep configuration DRY;
-- how state paths, CIDR ranges, and dependency graphs isolate environments;
-- how modules expose narrow inputs and outputs instead of embedding environment assumptions;
-- how public ingress terminates at the ALB while workloads remain private;
-- how IAM, security-group references, encryption, flow logs, and retention express security defaults;
-- how CI combines formatting, semantic validation, linting, policy-as-code, and secret scanning;
-- how cost, operational trade-offs, and production gaps are documented.
+I kept this repository focused on the core path from networking to a running container. It does not yet include:
 
-## Limitations and roadmap
+- Route 53 and certificate automation
+- AWS WAF or ALB access-log storage
+- A private ECR repository and image scanning
+- VPC endpoints
+- ECS autoscaling
+- Application secrets or tracing
+- GitHub OIDC deployment roles and approval gates
+- Automated integration tests or disaster-recovery exercises
 
-This reference does not include backend bootstrapping, Route 53 records, WAF, ALB access-log storage, autoscaling, a private ECR repository, VPC endpoints, service discovery, tracing, application secrets, deployment promotion, disaster recovery, or a complete OIDC delivery role. The public demonstration image is pinned by tag; production should pin an approved image by digest and scan it continuously. Checkov suppressions next to the ALB document the intentionally omitted WAF and log archive rather than hiding those gaps.
+The public container image is pinned to a version tag for readability. Production workloads should use an approved private image pinned by digest. Checkov exceptions beside the ALB and KMS policies document the few deliberate scanner exceptions and explain why they exist.
 
-Suggested next steps:
+## What I would discuss in an interview
 
-- add a dedicated bootstrap stack for hardened state storage and locking;
-- add ECR, image scanning, digest promotion, and private VPC endpoints;
-- add AWS WAF, ALB access logs, Route 53, and certificate automation;
-- add target-tracking autoscaling and SNS or incident-management alarm routing;
-- add Terraform tests and ephemeral integration environments;
-- add GitHub OIDC roles with environment-specific plan/apply workflows and approvals;
-- add multi-region recovery exercises and documented RTO/RPO targets.
+- How Terragrunt inheritance keeps shared configuration in one place
+- Why each component has separate state and explicit dependencies
+- Why the load balancer is public but the workload is private
+- How security-group references are narrower than VPC-wide ingress
+- When per-AZ NAT gateways are worth their cost
+- What I would add before allowing CI to deploy to production
 
-## License
+## Professional context
 
-MIT. See [LICENSE](LICENSE).
+The structure is inspired by patterns I used in production work where infrastructure provisioning time was reduced by approximately 60%. That result came from the professional implementation and its surrounding delivery process. This public reference repository is a separate demonstration; I am not claiming that the demo itself produced the same result.
 
 ## References
 
@@ -287,3 +271,7 @@ MIT. See [LICENSE](LICENSE).
 - [Terragrunt quick start](https://terragrunt.gruntwork.io/docs/getting-started/quick-start/)
 - [Terraform AWS tutorials](https://developer.hashicorp.com/terraform/tutorials/aws-get-started)
 - [AWS Fargate documentation](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
