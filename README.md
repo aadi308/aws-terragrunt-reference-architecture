@@ -1,6 +1,6 @@
 # AWS Terragrunt Reference Architecture
 
-[![Validate infrastructure](https://github.com/REPLACE_ME/aws-terragrunt-reference-architecture/actions/workflows/validate.yml/badge.svg)](https://github.com/REPLACE_ME/aws-terragrunt-reference-architecture/actions/workflows/validate.yml)
+[![Validate infrastructure](https://github.com/aadi308/aws-terragrunt-reference-architecture/actions/workflows/validate.yml/badge.svg)](https://github.com/aadi308/aws-terragrunt-reference-architecture/actions/workflows/validate.yml)
 
 A sanitized, recruiter-oriented reference implementation for running a container workload on AWS with Terraform and Terragrunt. It demonstrates reusable modules, isolated environment state, private compute, encrypted logs, least-privilege IAM examples, and automated policy checks.
 
@@ -115,8 +115,8 @@ Remote state can contain sensitive values even when outputs are marked `sensitiv
 
 ## Prerequisites
 
-- Terraform `>= 1.5.7, < 2.0`
-- Terragrunt `0.99.x` or a compatible release
+- [Terraform](https://developer.hashicorp.com/terraform/install) `>= 1.5.7, < 2.0`
+- [Terragrunt](https://terragrunt.gruntwork.io/docs/getting-started/install/) `0.99.x` or a compatible release
 - AWS CLI v2 and authorized, short-lived credentials
 - TFLint with the AWS ruleset
 - Checkov
@@ -125,6 +125,18 @@ Remote state can contain sensitive values even when outputs are marked `sensitiv
 - an ACM certificate in the selected AWS region
 
 No AWS account number, backend name, certificate, credential, or internal endpoint is included.
+
+## Quick start
+
+Clone this public reference implementation and run its checks without contacting AWS or creating infrastructure:
+
+```bash
+git clone https://github.com/aadi308/aws-terragrunt-reference-architecture.git
+cd aws-terragrunt-reference-architecture
+make check
+```
+
+`make check` formats, validates, lints, and scans the repository. It does not run `plan`, `apply`, or `destroy`.
 
 ## Setup and validation
 
@@ -167,6 +179,30 @@ No AWS account number, backend name, certificate, credential, or internal endpoi
    ```bash
    terragrunt run --all apply
    ```
+
+### Common Terragrunt commands
+
+Run a single component from its directory:
+
+```bash
+cd live/dev/us-east-1/network
+terragrunt init
+terragrunt plan
+```
+
+Run the complete environment dependency graph from its regional directory:
+
+```bash
+cd live/dev/us-east-1
+terragrunt run --all plan
+```
+
+Apply or destroy only after reviewing the plan, placeholders, credentials, and estimated cost:
+
+```bash
+terragrunt run --all apply
+terragrunt run --all destroy
+```
 
 ## CI validation
 
@@ -244,3 +280,10 @@ Suggested next steps:
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## References
+
+- [Terragrunt documentation](https://terragrunt.gruntwork.io/docs/)
+- [Terragrunt quick start](https://terragrunt.gruntwork.io/docs/getting-started/quick-start/)
+- [Terraform AWS tutorials](https://developer.hashicorp.com/terraform/tutorials/aws-get-started)
+- [AWS Fargate documentation](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html)
