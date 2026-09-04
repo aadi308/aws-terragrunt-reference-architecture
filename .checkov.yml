@@ -1,0 +1,10 @@
+compact: true
+directory:
+  - .
+download-external-modules: false
+evaluate-variables: true
+framework:
+  - terraform
+quiet: true
+soft-fail: false
+

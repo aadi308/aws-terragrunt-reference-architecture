@@ -1,0 +1,35 @@
+# Terraform and Terragrunt runtime data
+**/.terraform/*
+**/.terragrunt-cache/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+crash.log
+crash.*.log
+
+# Local values and generated configuration
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+**/backend.generated.tf
+**/provider.generated.tf
+.env
+.env.*
+!.env.example
+
+# Credentials and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+credentials
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
